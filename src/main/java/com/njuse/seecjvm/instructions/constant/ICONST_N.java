@@ -13,12 +13,12 @@ public class ICONST_N extends NoOperandsInstruction {
     }
 
     /**
-     * TODO：实现这条指令
+     * TOD：实现这条指令
      * 其中，成员val是需要被push的值，例如：ICONST_1这条指令对应的val是1
      */
     @Override
     public void execute(StackFrame frame) {
-
+        frame.getOperandStack().pushInt(val);
     }
 
     @Override

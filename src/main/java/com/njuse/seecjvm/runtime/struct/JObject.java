@@ -19,4 +19,9 @@ public abstract class JObject {
     public JObject() {
         id = numInHeap;
     }
+
+    public boolean isInstanceOf(JClass clazz) {
+        return this.clazz.isAssignableFrom(clazz);
+    }
+
 }

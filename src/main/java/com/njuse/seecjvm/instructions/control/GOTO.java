@@ -6,10 +6,11 @@ import com.njuse.seecjvm.runtime.StackFrame;
 public class GOTO extends BranchInstruction {
 
     /**
-     * TODO：实现这条指令
+     * TOD：实现这条指令
      */
     @Override
     public void execute(StackFrame frame) {
-
+        int PC = frame.getNextPC();
+        frame.setNextPC(PC+offset-3);
     }
 }

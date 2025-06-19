@@ -14,7 +14,7 @@ public class LDC extends Index8Instruction {
     }
 
     /**
-     * TODO：实现这条指令
+     * TOD：实现这条指令
      * 只需要考虑IntWrapper和FloatWrapper这两种情况
      */
     public static void loadConstant(StackFrame frame, int index) {
@@ -23,13 +23,13 @@ public class LDC extends Index8Instruction {
         //运行时常量池中对应的元素
         Constant constant = frame.getMethod().getClazz().getRuntimeConstantPool().getConstant(index);
         if (constant instanceof IntWrapper) {
-            //TODO 如果这个元素是IntWrapper， insert your code here
+            //TOD 如果这个元素是IntWrapper， insert your code here
+            stack.pushInt(((IntWrapper) constant).getValue());
         }
         else if (constant instanceof FloatWrapper) {
-            //TODO 如果这个元素是FloatWrapper， insert your code here
-
+            //TOD 如果这个元素是FloatWrapper， insert your code here
+            stack.pushFloat(((FloatWrapper) constant).getValue());
         }
-
         else throw new ClassFormatError();
 
     }
