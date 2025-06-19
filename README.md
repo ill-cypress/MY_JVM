@@ -1,365 +1,259 @@
-# Lab5 Instructions
+# Lab4 ClassLoader
 
-### ！！！注意看这里！！！
+## 0.须知
 
-1. 用JDK8（只能用8！）
-2. 用oracle的jdk
-3. 正确设置JAVA_HOME
-4. 前几次实验没问题**不代表**上面三个配置正确了！
-5. 在实现对long/double的操作时，请把**低4字节先入栈**/储存在局部变量表中**较低**的slot里
-6. 各种类型转换指令可以直接使用Java语言提供的强制类型转换，例如 `int result = (int)toConvert;`
+本次实验有不小的难度，请各位同学抓紧时间完成。
 
-### 简介
+由于原文过长，对应内容一定一定一定要读手册，背景知识中仅能对部分重点细节做出概述，无法面面俱到。此外，中文版的规范对这部分的描述非常非常非常容易引起歧义，建议直接英文版。其中和数组相关的部分可以先不看，对于学有余力的同学可以尝试一起读了，这是未来的bonus。
 
-Java程序是以字节码的形式储存在classfile中的，而JVM能够直接执行的指令也正是Java字节码。 在前面几次实验中，我们已经正确读取了classfile的内容，为指令的执行做好了准备， 而这次大作业的内容主要是实现几条JVM指令，**对应手册的第六章**。 在实现指令之前，为了加深理解，我们在JVM的“运行时环境”这部分框架代码中留了几个填空（已用TODO标记）， 这部分主要对应手册的2.5节。 在完成这几个填空之后，就可以尝试着实现JVM指令了！
+类加载的知识在《深入理解Java虚拟机》的第七章中也有非常精炼易读的讲解。也可以先阅读这一节中的知识点。最重要的是，你需要通读JVM规范Chapter5 来获取更多的细节。
 
-### jvm的运行时环境
+请先阅读教材学习知识再来做练习！！
 
-“运行时环境”这个词指的是JVM为执行指令所提供的计算模型。 例如之前计基课上学到的32位MIPS机器，它有32个通用寄存器，能够访问0 ～ 2^32−1范围内的内存。 
+请先阅读教材学习知识再来做练习！！
 
-再比如我们平常使用的x86-64架构的CPU有16个通用寄存器，能够按照一定的规则（具体规则比较复杂，不要在意这些细节～）来访问内存。 
+请先阅读教材学习知识再来做练习！！
 
-而JVM与它们的不同之处在于，JVM的指令采取了“**栈式指令风格**”，使用操作数栈来实现复杂的计算功能。 以一条加法指令为例，在MIPS机器上可以表示为`ADDI R1,R1,$1`，在x86-64机器上可以表示为`addl %eax, $1`， 而在JVM中可能通过这样的指令序列来表示（把操作数栈栈顶元素加1）：
+## 1.实验背景
 
-```
-ICONST_1
-IADD
-```
+截至lab3，我们已经实现了将类的二进制表示转换为JVM内部的结构，即JClass。在接下来的实验中，我们可以使用JClass来创建“类”和“接口”。而我们要解决的下一个问题是什么时候创建这些类。
 
-下面我们具体来看JVM的运行时环境。
+我们将使用类加载器完成这部分的工作。在JVM规范中对类加载(注意是类加载，加载只是其中的一个步骤)是这样定义的——“Java虚拟机动态地加载、链接与初始化类和接口。加载是根据特定名称查找类或接口类型的二进制表示(binary representation), 并由此二进制表示来创建类或接口的过程。链接是为了让类或接口可以被Java虚拟机执行，而将类或接口并入虚拟机运行时状态的过程。类或接口的初始化是指执行类或接口的初始化方法” 这一过程也是延迟绑定和多态的基础，即运行时才确定真正执行的类。
 
-![1](.\pic\1.png)
+[JVM规范 Chapter 5](https://docs.oracle.com/javase/specs/jvms/se8/html/jvms-5.html)
 
-#### JVM执行某一方法的流程
+本次实验将完成类加载器的加载、链接阶段。
 
-- 读取此方法的代码
+### 1.1 双亲委托加载机制
 
-- 初始化方法的栈帧
+加载阶段有一个非常重要的双亲委托机制，如图所示。（规范中只有两类，这是实际代码中的实现）
 
-  - 初始化操作数栈
+![alt text](image-1.png)
 
-  - 初始化局部变量表
+图中浅灰色的部分是类加载器，浅蓝色部分是它们对应的搜索区域。 双亲委托机制的含义是当一个类加载器收到加载请求时，它会优先将请求传递给父类，直到请求传到顶层。 从启动类加载器开始，每个加载器会首先尝试搜索自身对应的搜索区域，如果在这个过程中没有找到要加载的类，则子类再尝试自己搜索。
 
-  - 初始化PC为0
+双亲委托机制最显而易见的优点是加载器之间具备了一定的优先级。 这能够保证在编写程序时调用的标准库、标准扩展库中的类都是唯一确定的，因为它们都是在应用类加载器之上被加载的，即官方的统一实现。
 
-- 将栈帧push到 Thread Stack中
+然而双亲委托机制的缺点也是十分明显的，由于各个加载器之间存在着用extends用法表示的继承关系，每个类的父类都是确定的。 当出现了在标准库中需要调第三方编写的库这样的需求时，双亲委托机制就会失效，例如Java标准中的JNDI服务。
 
-- **while**(下一条指令不是`return`指令){
+[JNDI官方文档](https://docs.oracle.com/javase/tutorial/jndi/overview/index.html)
 
-​         **指令** := 从**PC**处读取一条指令
+我们会在实验中通过一个非常简单的方法来进行加载器之间的解耦。
 
-​         **PC**  :=  下一条指令的起始地址
+### 1.2 Defining & Initiating
 
-​         **指令**.执行()
+在有了对双亲加载机制的一定了解之后，让我们来看看规范中的细节。因为每一个类加载器都非常的懒，它们会优先让自己的父类去完成搜索。那么可以肯定的是，最后一定有一个类加载器在它自己的搜索空间中找到的对应的类，这个时候最初进行委托的加载器被称为Initiating loader，而最终找到的加载器被称为defining loader。
 
-​       }
+摘一段原文，这里的L是指loader，C是要被加载的类，还有个D(这里没出现)是指引用C的类。含义是D中出现了C(不一定是显式的出现)，C如果没有被加载，那么就通过L加载C。
 
-- 从Thread Stack中pop 出此栈帧
+> If L  creates C directly, we say that L  defines C or, equivalently, that L  is the defining loader of C  
+> When one class loader delegates to another class loader, the loader that initiates the loading is not necessarily the same loader that completes the loading and defines the class. If L  creates C, either by defining it directly or by delegation, we say that L  initiates loading of C or, equivalently, that L  is an initiating loader of C
 
-#### 啥是PC
+从我的解读来看，defining loader和initiating loader的概念并不绝对，它们是根据出现场景不同而有不同的名字。例如，假设D的defining loader是L1，那么C被加载时也会首先去试图让L1来加载，但是由于双亲加载机制的存在，最终加载C的加载器也许是L2，那么可以说L1是D的initiating loader，L2是D的defining loader。
 
-PC 是 指令 在 当前正在执行的方法的 code中的 偏移量。 在之前对classfile解析的过程中大家可以发现，有一种attribute叫做“code”，code本身是一个字节的序列，它和方法是一一对应的。一个方法只有一段code，而一段code也只能对应一个方法。（一个例外是，有的方法，例如抽象方法，并没有对应的code。）当这个方法开始执行时，PC被设置为0，每读取一条指令之后，我们首先增加PC，使它指向下一条指令，然后再执行这条指令。这里值得关注的是，有一些指令需要修改PC的值，例如跳转/分支指令，**在实现这些指令的时候，请务必记住，PC的值已经指向下一条指令了。**
+设置这两个概念的意义是支持双亲加载机制，当一个类的defining loader越接近上层，即越接近bootstrap loader，对应可搜索空间越少，这也就杜绝了java/lang/Object去调用你写的某个类的情况出现。
 
-
-
-#### 啥是局部变量表和操作数栈
-
-局部变量表储存方法的局部变量，而操作数栈储存下一步操作要用到的操作数。对于习惯x86-64指令集的同学们来说，这个概念可能比较令人困惑。我们先来看一个简单的例子： 对于表达式`result = a+b+c`，一种在x86-64指令集下的计算方式是：
-
-```
-movl %eax, a
-movl %ecx, b
-addl %eax, %ecx
-movl %ecx, c
-addl %eax, %ecx
-movl result, %eax
-```
-
-其中a, b, c, result均指这些符号对应的实际的内存地址。 在这里，我们先将a和b读入寄存器；然后进行相加；之后将c读入寄存器；然后和a+b的中间结果相加；然后将最终结果存入result. 而在JVM的栈式指令中，这段计算看起来可能是这样：
-
-```
-; operandStack:[]
-
-iLOAD [index of a]
-
-; operandStack:[a]
-
-iLOAD [index of b]
-
-; operandStack:[a, b]
-
-iADD
-
-; operandStack:[a+b]
-
-iLOAD [index of c]
-
-; operandStack:[a+b, c]
-
-iADD
-
-; operandStack:[a+b+c]
-
-iSTORE [index of result]
-
-; operandStack:[]
-```
-
-其中`index of SYMBOL`代表`SYMBOL`在局部变量表中的下标。分号开头的行是注释，里面标记了当前操作数栈里的内容。LOAD指令将变量从局部变量表读取到操作数栈中，STORE指令将操作数栈中的数据储存到对应的局部变量表中，ADD指令将两个操作数从操作数栈读出，然后把它们相加的结果写回操作数栈顶。
-
-> 【和实验无关内容，可以跳过】操作数栈的存在一定程度上是为了提高运行效率：因为寄存器的读写速度要比内存快得多，所以将频繁访问的操作数放在寄存器里可以增加指令执行的效率。而不同平台的寄存器数量不一样，栈式指令集提供了很好的跨平台支持--无论在什么平台上，都可以尽可能多地将操作数栈映射到物理机器的寄存器上，从而提高指令执行的效率。
-
-
-
-### 框架代码解析
-
-#### 关于runtime
-
-OperandStack中，我们使用一个Slot的数组来模拟栈结构，其中成员变量`top`用来表示当前栈顶的空闲位置。这个top并不会指向一个具体的元素而是总是指向一个空位。
-
-#### 关于指令
-
-对于任何一条指令，我们都实现了下面这样的接口：
+在实验中，在JClass中有一个loadEntryType，这对应了defining loader的含义。(在对规范的解读中并没有看出保留initiating loader有什么作用，因此就没有写在里面。如果有同学认为保留initiating loader可以做一些事欢迎和我们讨论~）
 
 ```java
-public abstract class Instruction {
-    public abstract void execute(StackFrame frame);
+private EntryType loadEntryType;
+```
 
-    public abstract void fetchOperands(ByteBuffer reader);
+### 1.3 方法区 Method Area
+
+在某些教材中方法区被认为是堆的一部分，也有些教材中将它称之为Non-Heap。无论教材中或者实现中是如何划分它的，方法区的作用就是存放类信息的，在我们的框架中即JClass(运行时常量池是JClass的一部分)。每当有类被加载进JVM中，类的相关信息就要被储存进方法区。
+
+在JVM中，一个类由完全限定名(之前的作业中提到过)和类加载器来唯一确定一个类。那么能出现由boostrap loader加载的java/lang/Object类和user loader加载的java/lang/Object类共存的情况吗？理论上可以 ，但是双亲加载机制杜绝了它。(如果你没能理解这个逻辑，建议再回到前一部分理解一下)
+
+代码中为了简化理解，只是用了完全限定名来保证唯一性。
+
+储存这件事情本身的最终目的就是加快访问。方法区作为JVM的一部分存储，在加载类之前会首先尝试直接获取这个类的信息，如果方法区中没有就再进行加载。
+
+### 1.4 解析
+
+解析的根本目的是为了实现延迟加载，延迟加载的根本目的是节省时间和空间。试想，如果不存在延迟加载，那么JVM必须一次性将所有的要用到的类加载进内存，首先这会在启动时带来巨大的延迟，并且会...
+
+...  
+并且会占用更多的内存。而使用了延迟加载之后，只有当使用到某个类时才会加载这个类，并且在JVM检测到这个类不需要时又会释放对应的空间。
+
+为了支持延迟加载，JVM把“需要引用某个类”这个信息变成了一个运行时常量池中的常量，这类常量叫做Ref引用。而解析就是将引用变为真正的类并加载到内存的过程。
+
+更多的解析算法你需要去阅读JVM规范对应章节，其中本次只需要用到类和接口的解析算法，其他可以暂时不看。
+
+## 2.实验要求
+
+因为实验整体要求就是基本按照JVM规范所规定的细节来模拟正确的流程，所以不是很好形式化。大致内容如下，部分细节会在2.3中说明，其余请参考代码中的注释提示以及实验指导：
+
+1. 完成ClassFileReader中的双亲委托机制  
+2. 完成ClassLoader中的defineClass方法  
+3. 完成ClassLoader中的link阶段的prepare方法  
+4. 完成SymRef中的resolveClassRef方法  
+5. 完成JClass中的权限验证: 参考规范要求(代码指导中会给出示例)
+
+### 2.1 实验输入
+
+测试中会调用的接口：ClassLoader中的loadClass，ClassRef中的resolveClassRef。其余接口由框架代码实现，不要随意删除即可。除了这两个方法以外的，实验要求中完成的方法都是可以更改的。我们这样进行划分只是为了在理解时更贴近JVM规范的语义，你可以自由实现。
+
+### 2.2 实验输出
+
+抛出所有的ClassNotFoundException和IllegalAccessException，无异常时没有任何输出。
+
+### 2.3 实验要求(部分细节，更多请参考实验指导)
+
+加载时的顺序严格遵守：递归加载父类 -> 按顺序加载自身的所有接口。需要注意接口之间也可以继承。一个例子是 A extends B implements C， B implements D，那么加载A的时候应该按顺序的加载结果是：
+
+```
+java/lang/Object → B → C → A，没有D
+```
+
+## 3.实验指导
+
+### 3.1 双亲加载
+
+双亲加载看起来上面写了非常长的一段，但实际上实现起来并不困难，在实验中不到10行就可以解决它。
+
+```java
+/** 
+ * @param className class to be read
+ * @param privilege privilege of relevant class
+ * @return content of class file and the privilege of loaded class
+ */
+public Pair<byte[], Integer> readClassFile(String className, EntryType p) {
+    String realClassName = className + ".class";
+    realClassName = PathUtil.transform(realClassName);
+    //todo
+    /**
+     * Add some codes here.
+     *
+     * You can pass realClassName to readClass()
+     *
+     * Read class file in privilege order
+     * USER_ENTRY has highest privileges and Boot_Entry has lowest privi
+     * If there is no relevant class loaded before, use default privilege
+     * Default privilege is USER_ENTRY
+     *
+     * Return the result once you read it.
+     */
+    throw new ClassNotFoundException();
 }
 ```
 
-其中，`fetchOperands`方法是为了读取构造这条指令所需要的参数：例如LDC这条指令（参见英文版手册第八版第538页），这条指令用于将某个运行时常量池中的值读入操作数栈。它的第一个字节是操作数，之后紧跟着一个字节是`index`，它是运行时常量池对应项的下标。 
+如之前作业中定义的那样，我们使用了Entry类来表示加载器，每个Entry拥有一个搜索路径classpath。在readClassFile方法中。我们稍微进行了一点修改，参数是要寻找的类的类名以及一个用来表示权限的EntryType变量。EntryType是一个枚举类实现，它使用int值定义了一组权限，有一点类似unix系统中用户权限的意思。枚举类中的每个变量int值越大意味着这个权限越高。
 
-`execute`方法是执行这条指令的接口，其中frame就是当前方法的栈帧。
+在方法具体实现时，每当传入的权限大于一个默认权限值，就拥有更多的搜索空间。方法的返回值会默认把实际加载了这个类的Entry的权限返回，而当需要加载这个类的父类和接口时会将这个类的权限传入，假设当前类是扩展标准库中的某个库，它的父类和接口就不可能来自userClasspath这个加载器。这样就可以保证被加载的库不向下调用库，支持双亲委托机制。
 
-系统中的解释器会用一个这样的循环来执行指令
+而在面对双亲委托模型无法应对的需求时，这个框架十分易于扩展的。比如需要打破不向下调用这一限定。 一种做法是增加一个介于权限A和B(A权限小于B)之间的新的权限N，并在原本返回A的位置返回N。 接着定义一个新的ENTRY并将权限赋值为N，通过某种方式查找文件。 这样就间接扩展了加载器的搜索范围，且不用担心破坏双亲委托机制。 此外，如果想要将标准库中的一些实现替换为自定义的库实现，也可以通过稍微调整权限判断的顺序和加载器对应权限的方式来办到这件事，消除了原本的继承关系的限制。
+
+在这部分中你还需要思考的问题就是如何分配权限。将权限与Entry对应起来并按照一定的顺序去试图获取要加载的类就可以实现双亲委托机制了~
 
 ```java
-while(true){
-  //读取一条指令
-  instruction = getInstruction(PC);
-  //取指令的构造参数
-  instruction.fetchOperands(reader);
-  //更新PC的值
-  updatePC();
-  //执行指令
-  instruction.execute(frame);
+public class EntryType {
+    public final static int LOW = 0x1;
+    public final static int MIDDLE = 0x3;
+    public final static int HIGH = 0x7;
 }
 ```
 
-下面我们以FLOAD指令为例来说明如何从手册实现代码。
+### 3.2 defineClass
 
-![2](.\pic\2.png)
+defineClass方法对应于规范5.3.5节，主要做四件事(对规范的规定做了一点简化)：
 
-首先我们从指令格式中知道了这条指令包括一个字节的操作数和一个字节的`index`， **在实验的框架代码中，我们已经将**`**index**`**读取好了，它保存在指令的叫做**`**index**`**的成员中**。 然后从执行前后操作数栈的变化可以看出，这条指令向操作数栈push了一个新的元素。从详细规格中 可以看出，这条指令从局部变量表中读出第`index`个变量，然后把它的值压入操作数栈。 至此，我们可以得到下面这样的实现：
+1. 检查是否已经规定了加载器，如没有则正常进行，如有则抛出异常。因为我们只实现单线程，这里是不会出现多线程中多个线程同时加载一个类导致并发bug的情况，故直接将二进制结果转换成JClass即可 (我们已经帮你写了)
+2. 递归加载父类
+3. 加载类的接口(不用递归)
+4. 设置类的defining loader，即更新JClass的loadEntryType，并将JClass加入方法区
+
+在代码中loadNonArrayClass方法在读取到二进制表示的同时获取到了definingEntry，加入方法区。方法区中有什么API请自行查看源码Method Area，如果没有接触过单例的设计模式也可以延伸学习一下~
 
 ```java
-public void execute(StackFrame frame) {
-    //从局部变量表读取对应元素
-    float val = frame.getLocalVars().getFloat(this.index);
-    //将这个元素压入操作数栈
-    frame.getOperandStack().pushFloat(val);
+/**
+ *
+ * define class
+ * @param data binary of class file
+ * @param definingEntry defining loader of class
+ */
+private JClass defineClass(byte[] data, EntryType definingEntry) throws {
+    ClassFile classFile = new ClassFile(data);
+    JClass clazz = new JClass(classFile);
+    //todo
+    /**
+     * Add some codes here.
+     *
+     * update load entry of the class
+     * load superclass recursively
+     * load interfaces of this class
+     * add to method area
+     */
+    return clazz;
 }
 ```
 
+需要注意类加入方法区的时机，测试中会严格检查添加的顺序。不用担心方法区中使用Map的实现，LinkedHashMap是有序的。
 
+### 3.3 prepare
 
-### 太长不看版：
+这部分内容已经实现了大半，你需要去了解在准备阶段默认值是如何规定的。不要想当然，可能会和你理解的有出入。规范上这部分分别对应了5.4.2和2.3-2.4。
 
-**在这个实验中，所有需要实现的部分都已经用**`**TODO**`**标记出来了。其中包括对运行时环境的个别接口的实现和一些指令的实现。大家在实验之前首先通过各种渠道理解一下JVM的运行时环境，然后参照手册实现对应指令即可。**
+因为Java语言中，基本类型的变量无法当成对象，装箱之后又无法新增接口。因此代码中使用`constant`接口和`wrapper`来统一包装了基本类型变量。你可以在源码中找到它们，注释中有对应的使用方法示例。
 
+此外，你还需要学习一下`Vars`结构体。在先前的作业中我们已经使用了槽位`Slot`这个概念，现在你可以看到Slot的具体实现了。在讲解Slot之前我们需要讲解一下类中的成员。
 
+类中的成员主要为两类：
 
+- 一类是对象引用，例如：`String myString`
+- 另一类则是基本类型，例如：`int a`
 
+而我们的需求是使用一个统一的结构体来存储这些成员，即`Vars`，用来表示一个类或实例中的所有成员。`Vars`就是一个`Slot`的数组，而`Slot`中包含了对象和值中的一个。类似于C语言中的`union`的作用，虽然Java做不到C语言那样复用空间。`JObject`代表所有的对象，`NullObject`代表null，而`value`则统一使用了`Integer`，因为Java中所有的值都可以转换为int类型。
 
-### 测试用例
-
-本实验包括三个测试用例和一个加分项。加分项主要涉及了类型转换指令。 我们首先将几个简单的Java程序编译成了class文件，框架代码读取了这些class文件，并且找到它们的main方法开始执行。在执行的过程中，解释器会（像上面那个循环所写的一样）依次构造、执行指令。你可以使用javap命令来读取测试的class文件中的指令以便debug。
-
-值得一提的是，测试用例中涉及到了几个`TestUtil`类的方法，这几个方法是在框架代码中通过某种方式来实现的。`TestUtil.fail()`会在被执行到时抛出`RuntimeException()`，`TestUtil.equalInt(a,b)`会判断a和b是否相等，如果不相等，则抛出`RuntimeException()`，`TestUtil.equalFloat(a,b)`同理，只是它是用来判断float型变量的。
-
-**在解释器运行时框架代码输出的信息仅供参考，不保证正确，请酌情使用。**
-
-
-
-#### testJmp
-
-涉及指令
-
-ifeq ifne goto
+从这里也可以看出long和double占用两个slot的原因——int只有32bit，而long和double都是64bit类型。
 
 ```java
-public static void testJmp(boolean a, boolean b, boolean c) {
-    //ifeq
-    if (a) {
-        TestUtil.fail();
-    } else {
-        //ifne ifeq
-        if (b || c) {
-            //ifeq
-            if (c) {
-                //goto
-                //return
-            }else {
-                TestUtil.fail();
-            }
-        } else {
-            TestUtil.fail();
-        }
-    }
-
+public class Slot {
+    private JObject object;
+    private Integer value;
 }
 
-
-public static void main(String[] args) {
-    testJmp(false, false, true);
+public class Vars {
+    private Slot[] varSlots;
+    private int maxSize;
 }
 ```
 
-#### branchTest
+### 3.4 解析classRef
 
-涉及指令
+完成这个要求你需要完全理解`SymRef`的结构。每个SymRef都持有一个对自身所在运行时常量池的引用，而运行时常量池中包含了对所属类的引用。再获取到目标类就可以进行验证并加载。验证部分就是3.5的部分，检查D对C的权限。
 
-dcmpg dcmpl dload goto iadd iconst_1 iconst_3 if_icmpeq if_icmpge if_icmpgt if_icmple if_icmplt if_icmpne ifge ifle iload
+### 3.5 权限验证
+
+JVM规范中的规定如下：
+
+> A class or interface C is accessible to a class or interface D if and only if either of the following is true:
+>
+> - C is public.
+> - C and D are members of the same run-time package.
+
+要验证这两个条件，我们在`JClass`类中提供了一些辅助的方法，如：
+
+- `isPublic()`
+- `getPackageName()`
+
+在之后的作业中，也许你还需要仿照着这些方法来实现更多方法以帮助你进行对某个属性的判断。
+
+在权限验证时如果不满足访问权限则抛出 `IllegalAccessException`。
+
+在设计测试用例时我们发现了一个有趣的问题。这三个类在同一个包中，猜猜`Visitor`中哪一句可以过编译？
 
 ```java
-public class ConditionTest {
-    public static void test(int small, int big, long smallL, long bigL, float smallF, float bigF,
-                            double smallD, double bigD) {
-        if (small == 3) {
-            if (small < big && smallL < bigL && smallF < bigF && smallD < bigD) {
-
-            } else {
-                TestUtil.fail();
-            }
-            big++;
-            if (big > small && bigL > smallL && bigF > smallF && bigD > smallD) {
-
-            } else {
-                TestUtil.fail();
-            }
-        } else {
-            TestUtil.fail();
-        }
-
-
-        if (small <= big) {
-            if (big > small) {
-
-            } else {
-                TestUtil.fail();
-            }
-            if (big + 1 >= small) {
-                if (big == small) {
-                    TestUtil.fail();
-                }
-                if (big != small) {
-
-                } else {
-                    TestUtil.fail();
-                }
-            }
-        }
-    }
-
-    public static void main(String[] args) {
-        test(3, 4, 5, 6, 7f, 8f, 9, 10);
-    }
+public class Visitor {
+    Visible1.Unknown v1 = new Visible1.Unknown();
+    Visible1.Unknown v2 = new Visible1.Unknown();
 }
-```
 
-
-
-#### mathTest
-
-涉及指令
-
-goto iadd iconst_1 iconst_5 idiv if_icmpne iload istore imul isub
-
-```java
-public class MathTest {
-
-    public static void test(int a, int b) {
-        int c = a + b;
-        if (c == 11 && a - b == 1 && a * b == 30 && a / b == 1) {
-            TestUtil.equalInt(a, 6);
-            TestUtil.equalInt(b, 5);
-        } else {
-            TestUtil.fail();
-        }
-
-    }
-
-    public static void main(String[] args) {
-        test(6, 5);
-    }
+public class Visible1 {
+    private static class Unknown {}
 }
-```
 
-#### ConversionTest（加分项）
-
-涉及指令：各种conversion
-
-（bipush, d2f, d2i, d2l, dadd, dconst_0, dload_1, dload_3, f2i, f2l, fadd, fconst_0, fload, fload_0, fstore, goto, i2b, i2c, i2d, i2l, i2s, iconst_3, if_icmpeq, ifeq, iload, ineg, invokestatic, ishl, istore, l2d, l2f, l2i, ladd, lcmp, ldc, ldc2_w, lload, lstore, pop, return, sipush）看起来很多，但是别害怕，因为其中并不是所有指令都要求在本次作业中实现了，有不少指令框架代码已经实现好了( ´▽` )ﾉ
-
-```java
-public class ConversionTest {
-    public static void test(float flt, double db, double bigDB, float bigFLT) {
-        //d2f
-        float a = (float) db;
-        float b = flt;
-        TestUtil.equalFloat(a, b);
-        //d2i
-        int c = (int) db;
-        //f2i
-        int d = (int) flt;
-        TestUtil.equalInt(c, d);
-        TestUtil.equalInt(c, 3);
-        //d2i
-        int max = (int) bigDB;
-        TestUtil.equalInt(max, Integer.MAX_VALUE);
-        //d2L
-        long maxL = (long) bigDB;
-        if (maxL != 2147483648L) {
-            TestUtil.fail();
-        }
-        //f2i
-        if (max != (int) bigFLT) {
-            TestUtil.fail();
-        }
-        //f2l
-        if (maxL != (long) bigFLT) {
-            TestUtil.fail();
-        }
-        int toB;
-        if (TestUtil.equalInt(c, c)) {
-            toB = 128;
-        } else {
-            toB = 128;
-        }
-        //i2b
-        byte bt = (byte) toB;
-        TestUtil.equalInt(bt, -128);
-        //i2c
-        char ch = (char) toB;
-        TestUtil.equalInt(ch, 128);
-        //i2d
-        TestUtil.equalInt((int) ((double) toB + 0.0), toB);
-        //i2l & l2i
-        TestUtil.equalInt((int) ((long) toB + ch + bt), toB);
-        //l2d
-        TestUtil.equalInt((int) ((double) ((long) toB + ch + bt) + 0.0), toB);
-        //l2f
-        TestUtil.equalInt((int) ((float) ((long) toB + ch + bt) + 0.0f), toB);
-        toB <<= 8;
-        //i2s
-        short sh = (short) toB;
-        TestUtil.equalInt(sh, -toB);
-    }
-
-    public static void main(String[] args) {
-        test(3.99f, 3.99, 2147483648.0, 2147483648.0f);
-    }
+class Visible2 {
+    public static class Unknown {}
 }
 ```
